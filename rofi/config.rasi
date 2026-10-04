@@ -1,0 +1,20 @@
+/* ── Лаунчер rofi ────────────────────────────────────────────────────────────
+ * Режимы: Super+R / Super+Space — приложения (drun), Super+Tab — окна (window)
+ * Цвета лежат в colors.rasi (генерируется скриптом rice), тема — theme.rasi
+ */
+configuration {
+    modi: "drun,window,run";
+    show-icons: true;
+    font: "JetBrainsMono Nerd Font 11";
+    terminal: "kitty";
+    matching: "fuzzy";
+    sort: true;
+    drun-display-format: "{name}";
+    window-format: "{w}  {c}  {t}";
+    disable-history: false;
+    click-to-exit: true;
+    hover-mode: false;
+}
+
+@import "colors.rasi"
+@import "theme.rasi"

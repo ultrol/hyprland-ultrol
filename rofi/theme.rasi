@@ -1,0 +1,111 @@
+/* Тема rofi — структура и эффекты.
+ * Цвета (@background, @foreground, @accent …) приходят из colors.rasi
+ * и меняются скриптом rice под обои.
+ */
+
+* {
+    background-color: @background;
+    foreground-color: @foreground;
+    border-color:     @border;
+    separatorcolor:   transparent;
+
+    normal-background:      transparent;
+    normal-foreground:      @foreground;
+    alternate-normal-background: @surface;
+    alternate-normal-foreground: @foreground;
+
+    selected-normal-background: @accent;
+    selected-normal-foreground: @accent-fg;
+
+    spacing: 2;
+}
+
+window {
+    background-color: @background;
+    border:       2px;
+    border-color: @accent;
+    border-radius: 18px;
+    width:        640px;
+    padding:      18px;
+    transparency: "real";
+}
+
+mainbox {
+    border:  0;
+    padding: 0;
+    spacing: 10px;
+    children: [ inputbar, message, listview ];
+}
+
+inputbar {
+    background-color: @surface;
+    border-radius:    12px;
+    padding:          10px 14px;
+    spacing:          10px;
+    children:         [ prompt, entry ];
+}
+
+prompt {
+    background-color: transparent;
+    text-color:       @accent;
+}
+
+entry {
+    background-color: transparent;
+    text-color:       @foreground;
+    placeholder:      "поиск…";
+    cursor:           text;
+}
+
+listview {
+    lines:          8;
+    columns:        1;
+    fixed-height:   true;
+    spacing:        4px;
+    scrollbar:      false;
+    border:         0;
+    padding:        6px 0 0 0;
+}
+
+element {
+    padding:            8px 12px;
+    border-radius:      10px;
+    background-color:   transparent;
+    text-color:         @foreground;
+    transition-duration: 150;
+}
+
+element-text {
+    background-color: inherit;
+    text-color:       inherit;
+}
+
+element-icon {
+    size:             24px;
+    background-color: transparent;
+    cursor:           inherit;
+}
+
+element normal.normal {
+    background-color: transparent;
+    text-color:       @foreground;
+}
+
+element selected.normal {
+    background-color: @accent;
+    text-color:       @accent-fg;
+}
+
+element alternate.normal {
+    background-color: @surface;
+    text-color:       @foreground;
+}
+
+message {
+    background-color: transparent;
+    padding:          6px 0 0 0;
+}
+
+textbox {
+    text-color: @foreground;
+}

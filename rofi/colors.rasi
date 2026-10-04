@@ -1,0 +1,14 @@
+/* GENERATED скриптом rice — не редактировать вручную. */
+ * {
+    background: #3f343aff;
+    foreground: #f8f8f8ff;
+    accent: #e3adbdff;
+    accent-fg: #3f343aff;
+    accent2: #b8848fff;
+    accent2-fg: #f8f8f8ff;
+    surface: #51474dff;
+    muted: #979295ff;
+    border: #726a6fff;
+    warning-fg: #f8f8f8ff;
+    critical-fg: #3f343aff;
+}
