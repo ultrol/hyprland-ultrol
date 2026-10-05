@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Выбор обоев из ~/Pictures/wallpapers через rofi + перекраска всей системы.
+# Запуск: Super+Shift+W
+DIR="$HOME/Pictures/wallpapers"
+SELF="$(dirname "$(readlink -f "$0")")"
+PICK="$(ls -1 "$DIR" 2>/dev/null | rofi -dmenu -i -p "обои")"
+[ -n "$PICK" ] || exit 0
+exec "$SELF/rice" "$DIR/$PICK"

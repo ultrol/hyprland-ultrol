@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Меню питания (rofi). Запуск: Super+Alt+C
+CHOICE="$(printf '%s\n' "заблокировать" "перезагрузка" "выключение" "выход" | \
+  rofi -dmenu -i -p "сессия")"
+
+case "$CHOICE" in
+  "заблокировать") hyprlock ;;
+  "перезагрузка")  systemctl reboot ;;
+  "выключение")    systemctl poweroff ;;
+  "выход")         hyprctl dispatch exit ;;
+esac

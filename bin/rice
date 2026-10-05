@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+#  rice <файл-обоев>
+#
+#  Ставит обои и перекрашивает всю систему под их палитру.
+#  Порядок работы:
+#    1. awww              — показать обои
+#    2. gowall extract    — вытащить палитру из картинки
+#    3. генерация цветов  — waybar / hyprland / mako / rofi / hyprlock /
+#                           kitty / btop / alacritty / gtk / kde / gowall
+#    4. перезагрузка      — hyprctl reload, waybar, mako
+#
+#  Руками править можно ТОЛЬКО обычные конфиги (структуру, отступы, ключи).
+#  Файлы с пометкой «GENERATED» перезаписываются при каждом запуске.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+IMG="${1:-}"
+if [ -z "$IMG" ]; then
+  echo "usage: rice <файл-обоев>"
+  echo "пример: rice ~/Pictures/wallpapers/1.jpg"
+  exit 1
+fi
+[ -f "$IMG" ] || { echo "rice: нет такого файла: $IMG"; exit 1; }
+IMG="$(readlink -f "$IMG")"
+
+HCONF="$HOME/.config/hypr/config/colors.lua"
+WCSS="$HOME/.config/waybar/colors.css"
+MAKO="$HOME/.config/mako/config"
+ROFI="$HOME/.config/rofi/colors.rasi"
+HLOCK="$HOME/.config/hypr/hyprlock.colors.conf"
+KCOLORS="$HOME/.config/kitty/colors.conf"
+BTOP="$HOME/.config/btop/themes/rice.theme"
+GWCONF="$HOME/.config/gowall/config.yml"
+WALLFILE="$HOME/.cache/rice-wallpaper"
+GTK3="$HOME/.config/gtk-3.0/rice.css"
+ALACT="$HOME/.config/alacritty/themes/rice.toml"
+KDEGLOBALS="$HOME/.config/kdeglobals"
+KDECOLORS="$HOME/.local/share/color-schemes/rice.colors"
+
+# ── цветовые помощники ──────────────────────────────────────────────────────
+low()  { echo "${1#\#}" | tr 'A-F' 'a-f'; }
+
+rgb() { # #RRGGBB -> "r g b" (десятичные)
+  local h; h="$(low "$1")"
+  printf '%d %d %d' "$((16#${h:0:2}))" "$((16#${h:2:2}))" "$((16#${h:4:2}))"
+}
+
+lum() { # #RRGGBB -> 0..255
+  local r g b; read -r r g b < <(rgb "$1")
+  awk -v r="$r" -v g="$g" -v b="$b" \
+    'BEGIN{printf "%d", 0.2126*r + 0.7152*g + 0.0722*b}'
+}
+
+chroma() { # #RRGGBB -> 0..255 (насыщенность)
+  local r g b; read -r r g b < <(rgb "$1")
+  awk -v r="$r" -v g="$g" -v b="$b" \
+    'BEGIN{mx=r; if(g>mx)mx=g; if(b>mx)mx=b; mn=r; if(g<mn)mn=g; if(b<mn)mn=b; printf "%d", mx-mn}'
+}
+
+hue() { # #RRGGBB -> 0..360, -1 если серый
+  local r g b; read -r r g b < <(rgb "$1")
+  awk -v R="$r" -v G="$g" -v B="$b" 'BEGIN{
+    r=R/255; g=G/255; b=B/255;
+    mx=r; if(g>mx)mx=g; if(b>mx)mx=b;
+    mn=r; if(g<mn)mn=g; if(b<mn)mn=b;
+    d=mx-mn; if(d==0){ print -1; exit }
+    if(mx==r)      hh=((g-b)/d) % 6
+    else if(mx==g) hh=(b-r)/d + 2
+    else           hh=(r-g)/d + 4
+    hh*=60; if(hh<0)hh+=360
+    printf "%d\n", hh
+  }'
+}
+
+mix() { # hexA hexB t(0..1) -> hex
+  local ar ag ab br bg bb
+  read -r ar ag ab < <(rgb "$1")
+  read -r br bg bb < <(rgb "$2")
+  awk -v ar="$ar" -v ag="$ag" -v ab="$ab" \
+      -v br="$br" -v bg="$bg" -v bb="$bb" -v t="$3" 'BEGIN{
+    printf "#%02x%02x%02x", ar+(br-ar)*t, ag+(bg-ag)*t, ab+(bb-ab)*t
+  }'
+}
+
+# ── 1. палитра из картинки ──────────────────────────────────────────────────
+RAW="$(gowall extract "$IMG" -c 12 --yes 2>/dev/null | tr -d '\r' | grep -E '^#[0-9A-Fa-f]{6}$' || true)"
+[ -n "$RAW" ] || { echo "rice: gowall не смог вытащить палитру"; exit 1; }
+mapfile -t PAL <<< "$RAW"
+
+# ── 2. тёмная или светлая тема ──────────────────────────────────────────────
+AVG_HEX="$(magick "$IMG" -resize 1x1! -colorspace sRGB -format '%[hex:p{0,0}]' info: 2>/dev/null || true)"
+[ -n "$AVG_HEX" ] || AVG_HEX="$(convert "$IMG" -resize 1x1! -colorspace sRGB -format '%[hex:p{0,0}]' info: 2>/dev/null || true)"
+AVG_HEX="${AVG_HEX#\#}"
+if ! [[ "$AVG_HEX" =~ ^[0-9A-Fa-f]{6}$ ]]; then
+  # запасной вариант — среднее по палитре
+  AVG_HEX="$(mix "${PAL[0]}" "${PAL[$((${#PAL[@]}-1))]}" 0.5 | tr -d '#')"
+fi
+AVG_LUM="$(lum "#$AVG_HEX")"
+
+mapfile -t SORTED < <(
+  for c in "${PAL[@]}"; do echo "$(lum "$c") $(low "$c")"; done | sort -n | awk '{print $2}'
+)
+N="${#SORTED[@]}"
+# Тема ВСЕГДА тёмная: фон — самый тёмный цвет палитры, текст — самый светлый.
+BG="${SORTED[0]}"
+FG="${SORTED[$((N-1))]}"
+
+# Гарантии палитры: фон обязательно тёмный (яркость ≤ 55), текст светлый,
+# разница яркостей ≥ 130. Сначала затемняем фон к чёрному, потом
+# осветляем текст к белому — на светлых обоях интерфейс иначе «выгорает».
+TARGET_BG_LUM=55
+CONTRAST_MIN=130
+bgl="$(lum "#$BG")"
+if [ "$bgl" -gt "$TARGET_BG_LUM" ]; then
+  # lum линейна, поэтому смешение с чёрным на (1 - target/lum) даёт ровно target
+  t="$(awk -v l="$bgl" -v tgt="$TARGET_BG_LUM" 'BEGIN{printf "%.3f", 1 - tgt/l}')"
+  BG="$(mix "#$BG" "#000000" "$t" | tr -d '#')"
+fi
+for t in 0.3 0.6 1.0; do
+  [ $(( $(lum "#$FG") - $(lum "#$BG") )) -ge "$CONTRAST_MIN" ] && break
+  FG="$(mix "#$FG" "#ffffff" "$t" | tr -d '#')"
+done
+
+# кандидаты в акценты (всё кроме фон/текст)
+CAND=()
+for c in "${PAL[@]}"; do
+  c="$(low "$c")"
+  [ "$c" = "$(low "$BG")" ] && continue
+  [ "$c" = "$(low "$FG")" ] && continue
+  CAND+=("$c")
+done
+[ "${#CAND[@]}" -gt 0 ] || CAND=("$(low "$FG")")
+
+# акценты = самые насыщенные, но с контрастом к фону (иначе текст не читается)
+mapfile -t BY_CHROMA < <(
+  for c in "${CAND[@]}"; do echo "$(chroma "$c") $c"; done | sort -rn | awk '{print $2}'
+)
+BGL="$(lum "#$BG")"
+contrast() { local d; d=$(( $(lum "#$1") - BGL )); echo "${d#-}"; }
+
+ACCENT=""
+for c in "${BY_CHROMA[@]}"; do
+  [ "$(contrast "$c")" -ge 60 ] && { ACCENT="$c"; break; }
+done
+[ -n "$ACCENT" ] || ACCENT="${BY_CHROMA[0]}"
+
+ACCENT2=""
+# Второй акцент — тоном близкий к первому (дистанция по hue ≤ 100°),
+# чтобы два акцента не складывались в «цветовую кашу».
+AH="$(hue "#$ACCENT")"
+for c in "${BY_CHROMA[@]}"; do
+  [ "$c" = "$ACCENT" ] && continue
+  [ "$(contrast "$c")" -ge 60 ] || continue
+  hh="$(hue "#$c")"
+  if [ "$hh" -ge 0 ] && [ "$AH" -ge 0 ]; then
+    d=$(( (hh - AH) % 360 )); [ "$d" -lt 0 ] && d=$((-d))
+    [ "$d" -gt 180 ] && d=$((360 - d))
+    [ "$d" -le 100 ] && { ACCENT2="$c"; break; }
+  fi
+done
+# если близкого тона нет — второй по насыщенности с контрастом к фону
+if [ -z "$ACCENT2" ]; then
+  for c in "${BY_CHROMA[@]}"; do
+    [ "$c" = "$ACCENT" ] && continue
+    [ "$(contrast "$c")" -ge 60 ] && { ACCENT2="$c"; break; }
+  done
+fi
+[ -n "$ACCENT2" ] || ACCENT2="${BY_CHROMA[1]:-$FG}"
+[ "$ACCENT2" = "$ACCENT" ] && ACCENT2="${BY_CHROMA[2]:-$FG}"
+
+# warning = самый «тёплый» (R-B), critical = самый «красный» (R-G)
+WARN="${CAND[0]}"; WARN_S=-999
+for c in "${CAND[@]}"; do
+  h="$(low "$c")"
+  r="0x${h:0:2}"; g="0x${h:2:2}"; b="0x${h:4:2}"
+  ws=$(( r - b ))
+  if [ "$ws" -gt "$WARN_S" ]; then WARN_S=$ws; WARN="$c"; fi
+done
+[ "$WARN_S" -le 0 ] && WARN="$ACCENT"
+
+CRIT="${CAND[0]}"; CRIT_S=-999
+for c in "${CAND[@]}"; do
+  [ "$c" = "$WARN" ] && continue      # critical не должен совпадать с warning
+  h="$(low "$c")"
+  r="0x${h:0:2}"; g="0x${h:2:2}"
+  cs=$(( r - g ))
+  if [ "$cs" -gt "$CRIT_S" ]; then CRIT_S=$cs; CRIT="$c"; fi
+done
+if [ "$CRIT_S" -le 0 ]; then
+  CRIT="$ACCENT"
+  [ "$CRIT" = "$WARN" ] && CRIT="$ACCENT2"
+fi
+
+# подтягиваем акцент/статусы к контрасту ≥ 60 к фону (иначе текст «тонет»);
+# после ensure_contrast фон тёмный (lum ≤ 125), поэтому mix с белым всегда помогает
+boost() {
+  local c="$1" t
+  for t in 0.35 0.7 1.0; do
+    [ "$(contrast "$c")" -ge 60 ] && break
+    c="$(mix "#$c" "#ffffff" "$t" | tr -d '#')"
+  done
+  echo "$c"
+}
+ACCENT="$(boost "$ACCENT")"
+ACCENT2="$(boost "$ACCENT2")"
+WARN="$(boost "$WARN")"
+CRIT="$(boost "$CRIT")"
+
+# текст на цветной подложке: из фон/текст берём более контрастный к ней
+on_color() {
+  local c="$1" d_bg d_fg
+  d_bg=$(( $(lum "#$c") - $(lum "#$BG") )); d_bg="${d_bg#-}"
+  d_fg=$(( $(lum "#$c") - $(lum "#$FG") )); d_fg="${d_fg#-}"
+  if [ "$d_bg" -ge "$d_fg" ]; then echo "$BG"; else echo "$FG"; fi
+}
+ON_ACCENT="$(on_color "$ACCENT")"
+ON_ACCENT2="$(on_color "$ACCENT2")"
+ON_WARN="$(on_color "$WARN")"
+ON_CRIT="$(on_color "$CRIT")"
+
+# производные
+SURFACE="$(mix "$BG" "$FG" 0.10)"
+BORDER="$(mix "$BG" "$FG" 0.28)"
+BORDER_IDLE="$(mix "$BG" "$FG" 0.16)"
+# muted — второстепенный текст: держим контраст к фону ≥ 60
+MUTED_T="$(awk -v d=$(( $(lum "#$FG") - $(lum "#$BG") )) 'BEGIN{
+  t = 60/d; if (t < 0.48) t = 0.48; if (t > 0.72) t = 0.72; printf "%.2f", t }')"
+MUTED="$(mix "$BG" "$FG" "$MUTED_T")"
+
+BG="$(low "$BG")"; FG="$(low "$FG")"
+ACCENT="$(low "$ACCENT")"; ACCENT2="$(low "$ACCENT2")"
+SURFACE="$(low "$SURFACE")"; MUTED="$(low "$MUTED")"
+BORDER="$(low "$BORDER")"; BORDER_IDLE="$(low "$BORDER_IDLE")"
+WARN="$(low "$WARN")"; CRIT="$(low "$CRIT")"
+
+rgba() { echo "rgba($(low "$1")${2:-ff})"; }
+
+echo "rice: палитра из $(basename "$IMG")  (яркость обоев $AVG_LUM → тёмная тема)"
+echo "      bg=$BG fg=$FG accent=$ACCENT accent2=$ACCENT2 muted=$MUTED warning=$WARN critical=$CRIT"
+echo "      контраст: fg/bg=$(( $(lum "#$FG") - $(lum "#$BG") )) accent/bg=$(contrast "$ACCENT") muted/bg=$(contrast "$MUTED") warn/bg=$(contrast "$WARN") crit/bg=$(contrast "$CRIT")"
+
+# ── 3. обои ─────────────────────────────────────────────────────────────────
+echo "$IMG" > "$WALLFILE"
+if ! pgrep -x awww-daemon >/dev/null 2>&1; then
+  awww-daemon >/dev/null 2>&1 &
+  sleep 1.5
+fi
+timeout 15 awww img "$IMG" >/dev/null 2>&1 || echo "rice: не удалось показать обои (awww)"
+
+# ── 4. генерация конфигов ───────────────────────────────────────────────────
+mkdir -p "$(dirname "$HCONF")" "$(dirname "$WCSS")" "$(dirname "$ROFI")" \
+         "$(dirname "$HLOCK")" "$(dirname "$KCOLORS")" "$(dirname "$BTOP")" \
+         "$(dirname "$GTK3")" "$(dirname "$ALACT")" "$(dirname "$KDECOLORS")"
+
+# 4.1 hyprland (Lua)
+{
+  echo "-- GENERATED скриптом rice — не редактировать вручную."
+  echo "-- Палитра меняется командой: rice ~/Pictures/wallpapers/<файл>"
+  echo
+  printf 'COL_BG          = "#%s"\n' "$BG"
+  printf 'COL_FG          = "#%s"\n' "$FG"
+  printf 'COL_ACCENT      = "#%s"\n' "$ACCENT"
+  printf 'COL_ACCENT2     = "#%s"\n' "$ACCENT2"
+  printf 'COL_SURFACE     = "#%s"\n' "$SURFACE"
+  printf 'COL_MUTED       = "#%s"\n' "$MUTED"
+  printf 'COL_BORDER      = "#%s"\n' "$BORDER"
+  printf 'COL_BORDER_IDLE = "#%s"\n' "$BORDER_IDLE"
+  printf 'COL_WARNING     = "#%s"\n' "$WARN"
+  printf 'COL_CRITICAL    = "#%s"\n' "$CRIT"
+  echo
+  printf 'COL_BG_RGBA          = "%s"\n' "$(rgba "$BG")"
+  printf 'COL_FG_RGBA          = "%s"\n' "$(rgba "$FG")"
+  printf 'COL_ACCENT_RGBA      = "%s"\n' "$(rgba "$ACCENT")"
+  printf 'COL_ACCENT2_RGBA     = "%s"\n' "$(rgba "$ACCENT2")"
+  printf 'COL_SURFACE_RGBA     = "%s"\n' "$(rgba "$SURFACE")"
+  printf 'COL_BORDER_RGBA      = "%s"\n' "$(rgba "$BORDER")"
+  printf 'COL_BORDER_IDLE_RGBA = "%s"\n' "$(rgba "$BORDER_IDLE")"
+  printf 'COL_CRITICAL_RGBA    = "%s"\n' "$(rgba "$CRIT")"
+} > "$HCONF"
+
+# 4.2 waybar
+{
+  echo "/* GENERATED скриптом rice — не редактировать вручную. */"
+  printf '@define-color background #%s;\n' "$BG"
+  printf '@define-color foreground #%s;\n' "$FG"
+  printf '@define-color accent #%s;\n' "$ACCENT"
+  printf '@define-color accent2 #%s;\n' "$ACCENT2"
+  printf '@define-color surface #%s;\n' "$SURFACE"
+  printf '@define-color muted #%s;\n' "$MUTED"
+  printf '@define-color warning #%s;\n' "$WARN"
+  printf '@define-color critical #%s;\n' "$CRIT"
+} > "$WCSS"
+
+# 4.3 mako (правятся только строки с цветами)
+if [ -f "$MAKO" ]; then
+  sed -i -E \
+    -e "s|^background-color=.*|background-color=#${BG}f0|" \
+    -e "s|^text-color=.*|text-color=#${FG}ff|" \
+    -e "s|^border-color=.*|border-color=#${ACCENT}ff|" \
+    -e "s|^progress-color=.*|progress-color=over #${ACCENT2}ff|" \
+    "$MAKO"
+fi
+
+# 4.4 rofi
+{
+  echo "/* GENERATED скриптом rice — не редактировать вручную. */"
+  echo " * {"
+  printf '    background: #%sff;\n' "$BG"
+  printf '    foreground: #%sff;\n' "$FG"
+  printf '    accent: #%sff;\n' "$ACCENT"
+  printf '    accent-fg: #%sff;\n' "$ON_ACCENT"
+  printf '    accent2: #%sff;\n' "$ACCENT2"
+  printf '    accent2-fg: #%sff;\n' "$ON_ACCENT2"
+  printf '    surface: #%sff;\n' "$SURFACE"
+  printf '    muted: #%sff;\n' "$MUTED"
+  printf '    border: #%sff;\n' "$BORDER"
+  printf '    warning-fg: #%sff;\n' "$ON_WARN"
+  printf '    critical-fg: #%sff;\n' "$ON_CRIT"
+  echo "}"
+} > "$ROFI"
+
+# 4.5 hyprlock (hyprlang-переменные)
+{
+  echo "# GENERATED скриптом rice — не редактировать вручную."
+  printf '$bg        = rgb(%s)\n' "$BG"
+  printf '$fg        = rgb(%s)\n' "$FG"
+  printf '$accent    = rgb(%s)\n' "$ACCENT"
+  printf '$accent2   = rgb(%s)\n' "$ACCENT2"
+  printf '$surface   = rgb(%s)\n' "$SURFACE"
+  printf '$muted     = rgb(%s)\n' "$MUTED"
+  printf '$warning   = rgb(%s)\n' "$WARN"
+  printf '$critical  = rgb(%s)\n' "$CRIT"
+  printf '$bg_soft   = rgba(%scc)\n' "$BG"
+} > "$HLOCK"
+
+# 4.6 kitty (ANSI-цвета подбираются по тону палитры)
+hue_pick() { # целевой тон -> цвет палитры
+  local target="$1" best="" best_s=9999 c hh d s
+  for c in "${CAND[@]}" "$ACCENT" "$ACCENT2" "$WARN" "$CRIT"; do
+    c="$(low "$c")"
+    hh="$(hue "#$c")"
+    [ "$hh" -ge 0 ] || continue
+    d=$(( (hh - target) % 360 )); [ "$d" -lt 0 ] && d=$((-d))
+    [ "$d" -gt 180 ] && d=$((360 - d))
+    s=$(( d + (60 - $(chroma "#$c")) ))
+    if [ "$s" -lt "$best_s" ]; then best_s=$s; best="$c"; fi
+  done
+  [ -n "$best" ] || best="$ACCENT"
+  echo "$best"
+}
+C_RED="$(hue_pick 0)";     C_GREEN="$(hue_pick 120)"
+C_YELLOW="$(hue_pick 60)"; C_BLUE="$(hue_pick 240)"
+C_MAGENTA="$(hue_pick 300)"; C_CYAN="$(hue_pick 180)"
+
+{
+  echo "# GENERATED скриптом rice — не редактировать вручную."
+  printf 'background #%s\n' "$BG"
+  printf 'foreground #%s\n' "$FG"
+  printf 'selection_background #%s\n' "$SURFACE"
+  printf 'selection_foreground #%s\n' "$FG"
+  printf 'cursor #%s\n' "$ACCENT"
+  printf 'cursor_text_color #%s\n' "$BG"
+  printf 'color0 #%s\n' "$(mix "$BG" "$FG" 0.06 | tr -d '#')"
+  printf 'color1 #%s\n' "$C_RED"
+  printf 'color2 #%s\n' "$C_GREEN"
+  printf 'color3 #%s\n' "$C_YELLOW"
+  printf 'color4 #%s\n' "$C_BLUE"
+  printf 'color5 #%s\n' "$C_MAGENTA"
+  printf 'color6 #%s\n' "$C_CYAN"
+  printf 'color7 #%s\n' "$MUTED"
+  printf 'color8 #%s\n'  "$(mix "$BG" "$FG" 0.28 | tr -d '#')"
+  printf 'color9 #%s\n'  "$(mix "$C_RED" "$FG" 0.3 | tr -d '#')"
+  printf 'color10 #%s\n' "$(mix "$C_GREEN" "$FG" 0.3 | tr -d '#')"
+  printf 'color11 #%s\n' "$(mix "$C_YELLOW" "$FG" 0.3 | tr -d '#')"
+  printf 'color12 #%s\n' "$(mix "$C_BLUE" "$FG" 0.3 | tr -d '#')"
+  printf 'color13 #%s\n' "$(mix "$C_MAGENTA" "$FG" 0.3 | tr -d '#')"
+  printf 'color14 #%s\n' "$(mix "$C_CYAN" "$FG" 0.3 | tr -d '#')"
+  printf 'color15 #%s\n' "$FG"
+} > "$KCOLORS"
+
+# 4.7 btop
+{
+  echo "# btop theme generated by rice"
+  echo
+  printf 'theme[main_bg]="#%s"\n' "$BG"
+  printf 'theme[main_fg]="#%s"\n' "$FG"
+  printf 'theme[title]="#%s"\n' "$ACCENT"
+  printf 'theme[hi_fg]="#%s"\n' "$ACCENT2"
+  printf 'theme[selected_bg]="#%s"\n' "$SURFACE"
+  printf 'theme[selected_fg]="#%s"\n' "$FG"
+  printf 'theme[inactive_fg]="#%s"\n' "$MUTED"
+  printf 'theme[proc_misc]="#%s"\n' "$(mix "$ACCENT" "$FG" 0.4)"
+  printf 'theme[cpu_box]="#%s"\n' "$BORDER"
+  printf 'theme[mem_box]="#%s"\n' "$BORDER"
+  printf 'theme[net_box]="#%s"\n' "$BORDER"
+  printf 'theme[proc_box]="#%s"\n' "$BORDER"
+  printf 'theme[div_line]="#%s"\n' "$BORDER_IDLE"
+  for k in temp cpu free cached available used download upload; do
+    printf 'theme[%s_start]="#%s"\n' "$k" "$ACCENT"
+    printf 'theme[%s_mid]="#%s"\n'   "$k" "$(mix "$ACCENT" "$ACCENT2" 0.5)"
+    printf 'theme[%s_end]="#%s"\n'   "$k" "$ACCENT2"
+  done
+} > "$BTOP"
+
+# 4.8 gowall: сохраняем палитру в config.yml (тема "current")
+mkdir -p "$(dirname "$GWCONF")"
+[ -f "$GWCONF" ] || printf 'themes:\n' > "$GWCONF"
+grep -q '^themes:' "$GWCONF" || { printf 'themes:\n' | cat - "$GWCONF" > "$GWCONF.tmp" && mv "$GWCONF.tmp" "$GWCONF"; }
+awk '
+  /^  - name: "current"/ { skip=1 }
+  /^  - name:/ && !/^  - name: "current"/ { skip=0 }
+  !skip { print }
+' "$GWCONF" > "$GWCONF.tmp"
+mv "$GWCONF.tmp" "$GWCONF"
+{
+  printf '  - name: "current"\n    colors:\n'
+  for c in "${PAL[@]}"; do printf '      - "#%s"\n' "$(low "$c")"; done
+} >> "$GWCONF"
+
+# 4.9 GTK3 (libadwaita @define-color) — gtk.css импортирует rice.css
+{
+  echo "/* GENERATED скриптом rice — не редактировать вручную. */"
+  printf '@define-color accent_color #%s;\n'      "$ACCENT"
+  printf '@define-color accent_bg_color #%s;\n'    "$ACCENT"
+  printf '@define-color accent_fg_color #%s;\n'    "$ON_ACCENT"
+  printf '@define-color destructive_bg_color #%s;\n' "$CRIT"
+  printf '@define-color destructive_fg_color #%s;\n' "$ON_CRIT"
+  printf '@define-color error_bg_color #%s;\n'     "$CRIT"
+  printf '@define-color error_fg_color #%s;\n'     "$ON_CRIT"
+  printf '@define-color warning_bg_color #%s;\n'   "$WARN"
+  printf '@define-color warning_fg_color #%s;\n'   "$ON_WARN"
+  printf '@define-color success_bg_color #%s;\n'   "$ACCENT2"
+  printf '@define-color success_fg_color #%s;\n'   "$ON_ACCENT2"
+  printf '@define-color window_bg_color #%s;\n'    "$BG"
+  printf '@define-color window_fg_color #%s;\n'    "$FG"
+  printf '@define-color view_bg_color #%s;\n'      "$BG"
+  printf '@define-color view_fg_color #%s;\n'      "$FG"
+  printf '@define-color headerbar_bg_color #%s;\n' "$SURFACE"
+  printf '@define-color headerbar_fg_color #%s;\n' "$FG"
+  printf '@define-color popover_bg_color #%s;\n'   "$SURFACE"
+  printf '@define-color popover_fg_color #%s;\n'   "$FG"
+  printf '@define-color card_bg_color #%s;\n'      "$SURFACE"
+  printf '@define-color card_fg_color #%s;\n'      "$FG"
+  printf '@define-color dialog_bg_color #%s;\n'    "$BG"
+  printf '@define-color dialog_fg_color #%s;\n'    "$FG"
+  printf '@define-color sidebar_bg_color #%s;\n'   "$SURFACE"
+  printf '@define-color sidebar_fg_color #%s;\n'   "$FG"
+  printf '@define-color thumbnail_bg_color #%s;\n' "$SURFACE"
+  printf '@define-color thumbnail_fg_color #%s;\n' "$FG"
+  printf '@define-color theme_selected_bg_color #%s;\n' "$ACCENT"
+  printf '@define-color theme_selected_fg_color #%s;\n' "$ON_ACCENT"
+  echo  '@define-color shade_color rgba(0, 0, 0, 0.36);'
+} > "$GTK3"
+
+# 4.10 alacritty (ANSI берём из той же раскладки, что и kitty)
+{
+  echo "# GENERATED скриптом rice — не редактировать вручную."
+  echo
+  echo "[colors.primary]"
+  printf 'background = "#%s"\n' "$BG"
+  printf 'foreground = "#%s"\n' "$FG"
+  echo
+  echo "[colors.cursor]"
+  printf 'text = "#%s"\n'   "$BG"
+  printf 'cursor = "#%s"\n' "$ACCENT"
+  echo
+  echo "[colors.selection]"
+  printf 'background = "#%s"\n' "$SURFACE"
+  printf 'foreground = "#%s"\n' "$FG"
+  echo
+  echo "[colors.normal]"
+  printf 'black = "#%s"\n'   "$(mix "$BG" "$FG" 0.06 | tr -d '#')"
+  printf 'red = "#%s"\n'     "$C_RED"
+  printf 'green = "#%s"\n'   "$C_GREEN"
+  printf 'yellow = "#%s"\n'  "$C_YELLOW"
+  printf 'blue = "#%s"\n'    "$C_BLUE"
+  printf 'magenta = "#%s"\n' "$C_MAGENTA"
+  printf 'cyan = "#%s"\n'    "$C_CYAN"
+  printf 'white = "#%s"\n'   "$MUTED"
+  echo
+  echo "[colors.bright]"
+  printf 'black = "#%s"\n'   "$(mix "$BG" "$FG" 0.28 | tr -d '#')"
+  printf 'red = "#%s"\n'     "$(mix "$C_RED" "$FG" 0.3 | tr -d '#')"
+  printf 'green = "#%s"\n'   "$(mix "$C_GREEN" "$FG" 0.3 | tr -d '#')"
+  printf 'yellow = "#%s"\n'  "$(mix "$C_YELLOW" "$FG" 0.3 | tr -d '#')"
+  printf 'blue = "#%s"\n'    "$(mix "$C_BLUE" "$FG" 0.3 | tr -d '#')"
+  printf 'magenta = "#%s"\n' "$(mix "$C_MAGENTA" "$FG" 0.3 | tr -d '#')"
+  printf 'cyan = "#%s"\n'    "$(mix "$C_CYAN" "$FG" 0.3 | tr -d '#')"
+  printf 'white = "#%s"\n'   "$FG"
+} > "$ALACT"
+
+# 4.11 KDE (kdeglobals + схема ~/.local/share/color-schemes/rice.colors)
+python3 - "$BG" "$FG" "$ACCENT" "$ACCENT2" "$SURFACE" "$MUTED" \
+          "$BORDER" "$BORDER_IDLE" "$WARN" "$CRIT" "$ON_ACCENT" \
+          "$KDEGLOBALS" "$KDECOLORS" <<'PY' || echo "rice: KDE-цвета не обновились"
+import sys
+bg, fg, accent, accent2, surface, muted, border, border_idle, \
+    warn, crit, on_accent, kg, kc = sys.argv[1:14]
+
+def rgb(h):
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def dec(c):
+    return "%d,%d,%d" % c
+
+def mix(a, b, t):
+    A, B = rgb(a), rgb(b)
+    return tuple(round(A[i] + (B[i] - A[i]) * t) for i in range(3))
+
+view_alt  = dec(mix(bg, fg, 0.06))
+header_bg = dec(mix(surface, fg, 0.04))
+disabled  = dec(mix(bg, fg, 0.20))
+
+def to_dec(v):
+    v = str(v)
+    return v if "," in v else dec(rgb(v))
+
+def colors(bg_c, fg_c, alt_c, link=accent, pos=accent2, neg=crit, neu=warn):
+    bg_c, fg_c, alt_c = to_dec(bg_c), to_dec(fg_c), to_dec(alt_c)
+    link, pos, neg, neu = to_dec(link), to_dec(pos), to_dec(neg), to_dec(neu)
+    active, inactive = to_dec(accent), to_dec(muted)
+    deco = to_dec(accent)
+    return (
+        "[Colors:%s]\n"
+        "BackgroundAlternate=%s\n"
+        "BackgroundNormal=%s\n"
+        "DecorationFocus=%s\n"
+        "DecorationHover=%s\n"
+        "ForegroundActive=%s\n"
+        "ForegroundInactive=%s\n"
+        "ForegroundLink=%s\n"
+        "ForegroundNegative=%s\n"
+        "ForegroundNeutral=%s\n"
+        "ForegroundNormal=%s\n"
+        "ForegroundPositive=%s\n"
+        "ForegroundVisited=%s\n"
+    ) % (name_global, alt_c, bg_c, deco, deco,
+         active, inactive, link, neg, neu, fg_c, pos, link)
+
+blocks = []
+for name_global, bg_c, fg_c, alt_c in [
+    ("Button",         dec(rgb(border_idle)), fg, dec(mix(border_idle, fg, 0.10))),
+    ("Complementary",  dec(rgb(bg)),          fg, view_alt),
+    ("Header",         header_bg,             fg, dec(rgb(border_idle))),
+    ("Selection",      accent,                on_accent, accent),
+    ("Tooltip",        dec(rgb(border_idle)), fg, dec(mix(border_idle, fg, 0.10))),
+    ("View",           dec(rgb(bg)),          fg, view_alt),
+    ("Window",         dec(rgb(surface)),     fg, dec(rgb(border_idle))),
+]:
+    sel_fg = on_accent if name_global == "Selection" else fg_c
+    link_c = on_accent if name_global == "Selection" else accent
+    blocks.append(colors(bg_c, sel_fg, alt_c, link=link_c,
+                         pos=(on_accent if name_global == "Selection" else accent2),
+                         neg=(on_accent if name_global == "Selection" else crit),
+                         neu=(on_accent if name_global == "Selection" else warn)))
+    if name_global in ("Header", "View", "Window"):
+        blocks.append(colors(bg_c, muted, alt_c).replace("[Colors:%s]" % name_global,
+                                                          "[Colors:%s][Inactive]" % name_global))
+
+body = "".join(blocks)
+
+effects = (
+    "[ColorEffects:Disabled]\n"
+    "Color=%s\n"
+    "ColorAmount=0\n"
+    "ColorEffect=0\n"
+    "ContrastAmount=0.65\n"
+    "ContrastEffect=1\n"
+    "IntensityAmount=0.1\n"
+    "IntensityEffect=2\n"
+    "\n"
+    "[ColorEffects:Inactive]\n"
+    "ChangeSelectionColor=true\n"
+    "Color=%s\n"
+    "ColorAmount=0.025\n"
+    "ColorEffect=2\n"
+    "ContrastAmount=0.1\n"
+    "ContrastEffect=1\n"
+    "Enable=false\n"
+    "IntensityAmount=0\n"
+    "IntensityEffect=0\n"
+    "\n"
+) % (disabled, dec(mix(bg, fg, 0.30)))
+
+general = (
+    "[General]\n"
+    "ColorScheme=rice\n"
+    "Name=rice\n"
+    "TerminalApplication=kitty\n"
+    "\n"
+    "[KDE]\n"
+    "contrast=4\n"
+    "\n"
+)
+
+wm = (
+    "[WM]\n"
+    "activeBackground=%s\n"
+    "activeBlend=%s\n"
+    "activeForeground=%s\n"
+    "inactiveBackground=%s\n"
+    "inactiveForeground=%s\n"
+) % (to_dec(surface), to_dec(accent), to_dec(fg), to_dec(bg), to_dec(muted))
+
+content = effects + body + general + wm
+for path in (kg, kc):
+    with open(path, "w") as f:
+        f.write("# GENERATED скриптом rice — не редактировать вручную.\n" + content)
+PY
+
+# ── 5. перезагрузка ─────────────────────────────────────────────────────────
+hyprctl reload >/dev/null 2>&1 || true
+if pgrep -x waybar >/dev/null 2>&1; then
+  pkill -USR2 waybar || true
+fi
+makoctl reload >/dev/null 2>&1 || true
+
+echo "rice: готово — обои и цвета обновлены"

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Скриншот с выбором режима (rofi). Запуск: Print
+# Режимы: область / окно / экран. Файлы: ~/Pictures/Screenshots + буфер обмена.
+MODE="$(printf '%s\n' "область" "окно" "экран" | rofi -dmenu -i -p "скриншот")"
+[ -n "$MODE" ] || exit 0
+
+DIR="$HOME/Pictures/Screenshots"
+mkdir -p "$DIR"
+
+case "$MODE" in
+  "область") hyprshot -m region -o "$DIR" -z ;;
+  "окно")    hyprshot -m window -o "$DIR" -z ;;
+  "экран")   hyprshot -m output -o "$DIR" -z ;;
+esac

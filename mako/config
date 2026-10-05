@@ -1,0 +1,31 @@
+# ── Уведомления (mako) ───────────────────────────────────────────────────────
+# Структуру/размеры/тайминги правим здесь.
+# Строки background-color / text-color / border-color / progress-color
+# перезаписываются скриптом rice (палитра под обои) — их не правим руками.
+
+font=JetBrainsMono Nerd Font 11
+width=340
+height=140
+margin=14
+padding=16
+border-size=2
+border-radius=16
+icons=1
+markup=1
+actions=1
+history=1
+default-timeout=6000
+max-visible=5
+layer=overlay
+anchor=top-right
+sort=-time
+group-by=app-name
+
+on-button-left=dismiss
+on-button-right=dismiss-all
+on-button-middle=none
+
+background-color=#3f343af0
+text-color=#f8f8f8ff
+border-color=#e3adbdff
+progress-color=over #b8848fff

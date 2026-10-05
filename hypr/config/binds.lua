@@ -17,7 +17,7 @@ end
 ---- УПРАВЛЕНИЕ ОКНАМИ ----
 ---------------------------
 
-hl.bind(mainMod .. " + Escape",      hl.dsp.exec_cmd("powermenuё"))
+hl.bind(mainMod .. " + Escape",      hl.dsp.exec_cmd(bin .. "powermenu"))
 hl.bind(mainMod .. " + Q",           hl.dsp.window.close())
 hl.bind(mainMod .. " + ALT + Space", hl.dsp.window.float({ action = "toggle" }))
 hl.bind(mainMod .. " + SHIFT + F",   hl.dsp.window.fullscreen({ mode = 1 }))

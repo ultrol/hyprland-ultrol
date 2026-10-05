@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Перезапуск waybar (замена omarchy-restart-waybar, которого в системе нет)
+pkill -x waybar 2>/dev/null
+sleep 0.3
+nohup waybar >/dev/null 2>&1 &
+disown
+echo "waybar перезапущен"

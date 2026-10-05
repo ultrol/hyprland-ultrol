@@ -1,0 +1,33 @@
+# GENERATED скриптом rice — не редактировать вручную.
+
+[colors.primary]
+background = "#3f343a"
+foreground = "#f8f8f8"
+
+[colors.cursor]
+text = "#3f343a"
+cursor = "#e3adbd"
+
+[colors.selection]
+background = "#51474d"
+foreground = "#f8f8f8"
+
+[colors.normal]
+black = "#4a3f45"
+red = "#b8848f"
+green = "#b8848f"
+yellow = "#b8848f"
+blue = "#8f8f95"
+magenta = "#e3adbd"
+cyan = "#8f8f95"
+white = "#979295"
+
+[colors.bright]
+black = "#726a6f"
+red = "#cba6ae"
+green = "#cba6ae"
+yellow = "#cba6ae"
+blue = "#aeaeb2"
+magenta = "#e9c3ce"
+cyan = "#aeaeb2"
+white = "#f8f8f8"
